@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pycache
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+env/
+.env
+.venv/
+
+# Model dosyaları (GB boyutunda)
+models/*.pt
+models/*.onnx
+models/*.bin
+models/*.safetensors
+models/moondream2/
+models/*_openvino_model/
+
+# WatchFolder içerikleri (gerçek yayın malzemeleri)
+WatchFolder/input/
+WatchFolder/output/
+WatchFolder/done/
+WatchFolder/error/
+
+# Log ve veri dosyaları
+data/app.log
+logs/
+*.log
+
+# YOLO eğitim çıktıları
+runs/
+
+# Veri setleri
+datasets/
+dataset/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Geçici dosyalar
+*.tmp
+*.temp
