@@ -3,14 +3,13 @@ FastAPI REST server. WatchFolder servisini kontrol eder, kuyruk durumunu sunar.
 """
 from __future__ import annotations
 
-import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -19,7 +18,32 @@ from service.job_queue import JobQueue
 if TYPE_CHECKING:
     from service.watchfolder import WatchFolder
 
-app = FastAPI(title="CNBC Türk — İçerik Tarama API", version="1.0.0", docs_url=None, redoc_url=None)
+app = FastAPI(
+    title="CNBC Türk — İçerik Tarama API",
+    version="1.0.0",
+    description="Video içerik tarama servisi. API key aktifse tüm isteklere `Authorization: Bearer <key>` header'ı ekleyin.",
+)
+
+
+def _get_api_key() -> str:
+    cfg = _load_config()
+    return cfg.get("api", {}).get("api_key", "")
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    # Swagger ve health endpoint'leri auth gerektirmesin
+    if request.url.path in ("/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+
+    key = _get_api_key()
+    if key:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth[7:] != key:
+            return JSONResponse(status_code=401, content={"detail": "Geçersiz veya eksik API anahtarı."})
+
+    return await call_next(request)
+
 
 # Uygulama genelinde paylaşılan state
 _job_queue: JobQueue = JobQueue()
@@ -44,7 +68,7 @@ def get_job_queue() -> JobQueue:
 
 @app.get("/api/status")
 def status():
-    running = _watchfolder is not None and not _watchfolder._stop_event
+    running = _watchfolder is not None and _watchfolder.is_running()
     uptime = int((datetime.now() - _started_at).total_seconds()) if _started_at else 0
     return {
         "running": running,
@@ -59,7 +83,7 @@ def status():
 def start_service():
     global _watchfolder, _wf_thread, _started_at
 
-    if _watchfolder and not _watchfolder._stop_event:
+    if _watchfolder and _watchfolder.is_running():
         return {"ok": False, "message": "Servis zaten çalışıyor."}
 
     cfg = _load_config()
@@ -85,7 +109,7 @@ def start_service():
 @app.post("/api/stop")
 def stop_service():
     global _watchfolder
-    if not _watchfolder or _watchfolder._stop_event:
+    if not _watchfolder or not _watchfolder.is_running():
         return {"ok": False, "message": "Servis zaten durmuş."}
     _watchfolder.stop()
     logger.info("Servis API üzerinden durduruldu.")
@@ -109,7 +133,8 @@ async def upload_video(file: UploadFile = File(...)):
 
     dest = input_dir / file.filename
     with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+        for chunk in file.file:
+            f.write(chunk)
 
     job = _job_queue.enqueue(filename=file.filename, filepath=str(dest))
     logger.info(f"Video yüklendi: {file.filename} → job {job.id}")

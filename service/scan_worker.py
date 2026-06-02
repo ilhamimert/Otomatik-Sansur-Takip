@@ -21,6 +21,7 @@ from utils.time_utils import frame_to_seconds, frame_to_str
 from utils.video_utils import get_video_info, open_capture
 
 
+
 @dataclass
 class ScanResult:
     timestamp_str: str

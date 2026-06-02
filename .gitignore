@@ -23,6 +23,8 @@ models/*.bin
 models/*.safetensors
 models/moondream2/
 models/*_openvino_model/
+models/modules/
+models/hub/
 
 # WatchFolder içerikleri (gerçek yayın malzemeleri)
 WatchFolder/input/
@@ -52,6 +54,26 @@ dataset/
 Thumbs.db
 desktop.ini
 
+# Claude Code ayarları
+.claude/
+
+# WatchFolder video içerikleri
+WatchFolder/processing/
+WatchFolder/input/
+WatchFolder/output/
+WatchFolder/done/
+WatchFolder/error/
+
+# Veritabanı
+data/violations.db
+data/*.db
+
 # Geçici dosyalar
 *.tmp
 *.temp
+
+# Test cache
+.pytest_cache/
+
+# Windows service binary (manuel indir)
+nssm.exe

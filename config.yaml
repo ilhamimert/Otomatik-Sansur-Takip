@@ -32,3 +32,8 @@ ui:
 service:
   watch_dir: ""          # boş bırakırsan proje yanında WatchFolder/ oluşturulur
   max_workers: 2         # aynı anda kaç video paralel taransın
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  api_key: ""            # boş bırakırsan auth devre dışı; doldurunca Bearer token zorunlu olur

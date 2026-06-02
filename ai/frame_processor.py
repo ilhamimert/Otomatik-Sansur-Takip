@@ -34,9 +34,3 @@ def apply_blur(frame: np.ndarray, bbox: tuple, intensity: str = "high") -> np.nd
     return out
 
 
-def frame_to_qimage(frame: np.ndarray):
-    """OpenCV BGR frame'i PyQt6 QImage'e dönüştür."""
-    from PyQt6.QtGui import QImage
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    h, w, ch = rgb.shape
-    return QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)

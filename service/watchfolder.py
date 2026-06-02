@@ -63,6 +63,9 @@ class WatchFolder:
         self._stop_event = False
         self._job_queue = job_queue
 
+    def is_running(self) -> bool:
+        return not self._stop_event
+
         for d in [self._input, self._processing, self._done, self._output]:
             d.mkdir(parents=True, exist_ok=True)
 
