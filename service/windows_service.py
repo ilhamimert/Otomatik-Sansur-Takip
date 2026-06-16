@@ -1,7 +1,5 @@
 """
-Windows Service kabuğu — FastAPI + WatchFolder birleşik mod.
-Servis başlayınca hem REST API (uvicorn) hem WatchFolder çalışır.
-
+Windows Service kabuğu.
 Kurulum  : python service/windows_service.py install
 Başlatma : python service/windows_service.py start
 Durdurma : python service/windows_service.py stop
@@ -11,9 +9,7 @@ Manuel   : python service/windows_service.py run  (servis olmadan test)
 from __future__ import annotations
 
 import os
-import socket
 import sys
-import threading
 from pathlib import Path
 
 # Proje kök dizinini sys.path'e ekle
@@ -21,31 +17,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-# Servis olarak çalışırken (LocalSystem) venv DLL dizinlerini PATH'e ekle
-# cv2, torch gibi kütüphaneler kullanıcı PATH'ini görmez; tüm .libs dizinlerini ekle
-_site_packages = ROOT / "venv" / "Lib" / "site-packages"
-_dll_dirs = [ROOT / "venv" / "Scripts", _site_packages]
-# site-packages altındaki tüm *.libs ve *_system32 dizinlerini otomatik ekle
-for _d in _site_packages.iterdir():
-    if _d.is_dir() and (_d.name.endswith(".libs") or _d.name.endswith("_system32")):
-        _dll_dirs.append(_d)
-_dll_dirs.append(_site_packages / "cv2")
-
-_path_prepend = []
-for _dll_dir in _dll_dirs:
-    if _dll_dir.exists():
-        try:
-            os.add_dll_directory(str(_dll_dir))
-        except Exception:
-            pass
-        _path_prepend.append(str(_dll_dir))
-
-os.environ["PATH"] = os.pathsep.join(_path_prepend) + os.pathsep + os.environ.get("PATH", "")
-
 import yaml
-import uvicorn
 from loguru import logger
 
+# Log dosyası ayarı
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 logger.add(
@@ -57,7 +32,7 @@ logger.add(
 )
 
 
-def _load_config() -> dict:
+def _load_service_config() -> dict:
     cfg_path = ROOT / "config.yaml"
     try:
         with open(cfg_path, encoding="utf-8") as f:
@@ -66,40 +41,36 @@ def _load_config() -> dict:
         return {}
 
 
-def _port_in_use(host: str, port: int) -> bool:
-    """Verilen port zaten kullanılıyorsa True döner."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(1)
-        return s.connect_ex((host if host != "0.0.0.0" else "127.0.0.1", port)) == 0
+def _get_watchfolder_path() -> str:
+    cfg = _load_service_config()
+    path = cfg.get("service", {}).get("watch_dir", "")
+    if path:
+        return path
+    default = ROOT / "WatchFolder"
+    default.mkdir(exist_ok=True)
+    return str(default)
 
 
-def _run_api_server():
-    """uvicorn'u bloklayan modda başlatır; servis thread'inde çağrılır."""
-    try:
-        logger.info("_run_api_server başlıyor — import deneniyor.")
-        from api.server import app, start_service
-        logger.info("Import başarılı.")
-
-        cfg = _load_config()
-        api_cfg = cfg.get("api", {})
-        host = api_cfg.get("host", "0.0.0.0")
-        port = api_cfg.get("port", 8000)
-
-        if _port_in_use(host, port):
-            logger.error(f"Port {port} zaten kullanımda — servis başlatılamıyor.")
-            return
-
-        start_service()
-        logger.info(f"REST API başlatılıyor: http://{host}:{port}")
-        uvicorn.run(app, host=host, port=port, log_level="warning")
-    except Exception:
-        logger.exception("_run_api_server içinde beklenmeyen hata.")
+def _get_max_workers() -> int:
+    cfg = _load_service_config()
+    return cfg.get("service", {}).get("max_workers", 2)
 
 
-def _run_standalone():
-    """Manuel test modu — servis altyapısı olmadan direkt çalıştırır."""
-    logger.info("Manuel mod — API sunucusu başlatılıyor.")
-    _run_api_server()
+def _run_watchfolder():
+    from service.job_queue import JobQueue
+    from service.watchfolder import WatchFolder
+    watch_dir = _get_watchfolder_path()
+    max_workers = _get_max_workers()
+    logger.info(f"WatchFolder yolu: {watch_dir}")
+    logger.info(f"Paralel tarama sayısı: {max_workers}")
+    job_queue = JobQueue()
+    wf = WatchFolder(
+        watch_dir,
+        config_path=str(ROOT / "config.yaml"),
+        max_workers=max_workers,
+        job_queue=job_queue,
+    )
+    wf.start()
 
 
 # ── Windows Service ──────────────────────────────────────────────────────────
@@ -112,28 +83,19 @@ try:
     class CnbcScanService(win32serviceutil.ServiceFramework):
         _svc_name_ = "CnbcContentScanner"
         _svc_display_name_ = "CNBC Türk İçerik Tarama Servisi"
-        _svc_description_ = "REST API + WatchFolder: uygunsuz içerik tespiti, TXT rapor üretimi."
-        _svc_start_type_ = win32service.SERVICE_AUTO_START  # sistem açılışında otomatik başla
+        _svc_description_ = "WatchFolder izler, uygunsuz içerik tespiti yapar, TXT rapor üretir."
 
         def __init__(self, args):
             win32serviceutil.ServiceFramework.__init__(self, args)
-            self._win_stop_event = win32event.CreateEvent(None, 0, 0, None)
-            self._server_thread: threading.Thread | None = None
+            self._stop_event = win32event.CreateEvent(None, 0, 0, None)
+            self._wf = None
 
         def SvcStop(self):
             logger.info("Servis durduruluyor...")
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-            self._graceful_shutdown()
-            win32event.SetEvent(self._win_stop_event)
-
-        def _graceful_shutdown(self):
-            """Aktif taramaların bitmesini beklemeden WatchFolder'ı durdurur."""
-            try:
-                from api.server import stop_service
-                stop_service()
-                logger.info("WatchFolder durduruldu.")
-            except Exception as e:
-                logger.warning(f"Graceful shutdown sırasında hata: {e}")
+            if self._wf:
+                self._wf.stop()
+            win32event.SetEvent(self._stop_event)
 
         def SvcDoRun(self):
             servicemanager.LogMsg(
@@ -142,9 +104,21 @@ try:
                 (self._svc_name_, ""),
             )
             logger.info("Servis başlatıldı.")
-            self._server_thread = threading.Thread(target=_run_api_server, daemon=True)
-            self._server_thread.start()
-            win32event.WaitForSingleObject(self._win_stop_event, win32event.INFINITE)
+            import threading
+            from service.job_queue import JobQueue
+            from service.watchfolder import WatchFolder
+
+            watch_dir = _get_watchfolder_path()
+            max_workers = _get_max_workers()
+            self._wf = WatchFolder(
+                watch_dir,
+                config_path=str(ROOT / "config.yaml"),
+                max_workers=max_workers,
+                job_queue=JobQueue(),
+            )
+            t = threading.Thread(target=self._wf.start, daemon=True)
+            t.start()
+            win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
             logger.info("Servis durdu.")
 
     def main():
@@ -156,32 +130,23 @@ try:
             win32serviceutil.HandleCommandLine(CnbcScanService)
 
 except ImportError:
+    # pywin32 kurulu değil — sadece "run" komutu çalışır
     def main():
-        args = sys.argv[1:]
-        if args and args[0] == "run":
-            _run_standalone()
-        elif args and args[0] in ("install", "start", "stop", "remove", "restart"):
-            print("Hata: pywin32 kurulu değil, Windows Service işlemleri yapılamıyor.")
-            print("")
-            print("Kurulum için:")
-            print("  pip install pywin32")
-            print("  python -m pywin32_postinstall -install")
-            sys.exit(1)
+        if len(sys.argv) > 1 and sys.argv[1] == "run":
+            logger.info("Manuel mod (pywin32 yok) — WatchFolder başlatılıyor.")
+            _run_watchfolder()
         else:
-            print("Kullanım:")
-            print("  python service/windows_service.py install  — servisi kur")
-            print("  python service/windows_service.py start    — servisi başlat")
-            print("  python service/windows_service.py stop     — servisi durdur")
-            print("  python service/windows_service.py remove   — servisi kaldır")
-            print("  python service/windows_service.py run      — manuel test (pywin32 gerekmez)")
-            print("")
             print("pywin32 kurulu değil. Servis kurulumu için:")
             print("  pip install pywin32")
+            print("")
+            print("Manuel test için:")
+            print("  python service/windows_service.py run")
             sys.exit(1)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run":
-        _run_standalone()
+        logger.info("Manuel mod — WatchFolder başlatılıyor.")
+        _run_watchfolder()
     else:
         main()
